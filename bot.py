@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -5,59 +6,243 @@ import os
 from dotenv import load_dotenv
 from sheet_helper import sheet_manager
 
-
 load_dotenv()
 
-# Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Token và Admin ID
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
+ADMIN_ID = int(os.getenv('ADMIN_ID', '0'))
 
-# --- COMMAND HANDLERS ---
+COMPANY_NAME = "Logistics Supporter"
+CONTACT_TELEGRAM = "t.me/+84967070468"
+CONTACT_ZALO = "0967070468"
+WORKING_HOURS = "Thứ 2 - Thứ 6: 8:00 - 17:30 | Thứ 7: 8:00 - 12:00"
+
+ROUTES = {
+    "vnuswc": {
+        "name": "VN → US West Coast",
+        "pol": "HCM",
+        "pods": ["LAX", "LGB", "SEA"],
+        "flag": "🇺🇸"
+    },
+    "vnusec": {
+        "name": "VN → US East Coast",
+        "pol": "HCM",
+        "pods": ["NYC", "SAV", "MIA"],
+        "flag": "🇺🇸"
+    },
+    "vneu": {
+        "name": "VN → EU",
+        "pol": "HCM",
+        "pods": ["RTM", "HAM", "FEL"],
+        "flag": "🇪🇺"
+    },
+    "vnjp": {
+        "name": "VN → Japan",
+        "pol": "HCM",
+        "pods": ["TYO", "OSA", "NGO"],
+        "flag": "🇯🇵"
+    },
+    "vnkr": {
+        "name": "VN → Korea",
+        "pol": "HCM",
+        "pods": ["BUS", "INC"],
+        "flag": "🇰🇷"
+    },
+    "vnau": {
+        "name": "VN → Australia",
+        "pol": "HCM",
+        "pods": ["SYD", "MEL", "BNE"],
+        "flag": "🇦🇺"
+    },
+    "vnin": {
+        "name": "VN → India",
+        "pol": "HCM",
+        "pods": ["JNPT", "NMPT", "MAA"],
+        "flag": "🇮🇳"
+    }
+}
+
+
+# ── MAIN MENU ──────────────────────────────────────────────────────────────────
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý lệnh /start"""
     user = update.effective_user
-    
-    # Lấy config từ sheet
-    company = sheet_manager.get_config('company_name') or "Công ty chúng tôi"
-    welcome = sheet_manager.get_config('welcome_message') or f"Chào mừng {user.first_name}!"
-    
-    # Tạo keyboard
     keyboard = [
         [
-            InlineKeyboardButton("📊 Bảng giá", callback_data='rates'),
-            InlineKeyboardButton("🛳 Space", callback_data='space')
+            InlineKeyboardButton("📊 Bảng giá cước", callback_data='rates'),
+            InlineKeyboardButton("🛳 Space & Lịch tàu", callback_data='space')
         ],
         [
             InlineKeyboardButton("🗺 Các tuyến", callback_data='routes'),
-            InlineKeyboardButton("📞 Liên hệ", callback_data='contact')
+            InlineKeyboardButton("📞 Liên hệ tư vấn", callback_data='contact')
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Gửi tin nhắn
+
     await update.message.reply_text(
-        f"🚢 *{company}*\n\n"
-        f"{welcome}\n\n"
-        f"Tôi có thể giúp gì cho bạn?",
+        f"🚢 *{COMPANY_NAME}*\n\n"
+        f"Xin chào {user.first_name}! 👋\n"
+        f"Tôi có thể giúp bạn tra cứu:\n\n"
+        f"📊 Giá cước Ocean Freight\n"
+        f"🛳 Space & Lịch tàu\n"
+        f"🗺 Các tuyến đang khai thác\n\n"
+        f"Vui lòng chọn thông tin cần xem:",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
-    
-    # Ghi log
-    sheet_manager.log_action(user.id, "START", "", "SUCCESS")
+
+
+# ── ROUTES ─────────────────────────────────────────────────────────────────────
+
+async def show_routes(query):
+    text = f"🗺 *Các tuyến đang khai thác*\n\n"
+    for key, r in ROUTES.items():
+        pods = ", ".join(r['pods'])
+        text += f"{r['flag']} *{r['name']}*\n"
+        text += f"   POL: {r['pol']} → POD: {pods}\n\n"
+
+    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+
+# ── RATES ──────────────────────────────────────────────────────────────────────
+
+async def show_rates_menu(query):
+    keyboard = []
+    row = []
+    for key, r in ROUTES.items():
+        row.append(InlineKeyboardButton(f"{r['flag']} {r['name']}", callback_data=f'rate_{key}'))
+        if len(row) == 1:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data='back')])
+
+    await query.edit_message_text(
+        "📊 *Bảng giá cước*\n\nChọn tuyến bạn muốn xem:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+async def show_rate_detail(query, route_key):
+    if route_key not in ROUTES:
+        await query.edit_message_text("❌ Tuyến không hợp lệ.")
+        return
+
+    r = ROUTES[route_key]
+    rates = sheet_manager.get_rates(route=r['name'])
+
+    keyboard = [
+        [InlineKeyboardButton("🔙 Quay lại", callback_data='rates')]
+    ]
+
+    if not rates:
+        await query.edit_message_text(
+            f"⚠️ *Hiện chưa có giá cho tuyến {r['name']}*\n\n"
+            f"Vui lòng liên hệ trực tiếp để được báo giá:\n"
+            f"📱 Telegram: {CONTACT_TELEGRAM}\n"
+            f"📲 Zalo: {CONTACT_ZALO}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return
+
+    msg = f"📊 *Bảng giá {r['name']}*\n"
+    msg += f"POL: {r['pol']}\n"
+    msg += "─" * 25 + "\n\n"
+
+    for rate in rates[:5]:
+        msg += f"🚢 *{rate.get('Carrier', 'N/A')}*\n"
+        msg += f"  20GP: ${rate.get('20GP', 'N/A')}\n"
+        msg += f"  40GP: ${rate.get('40GP', 'N/A')}\n"
+        msg += f"  40HC: ${rate.get('40HC', 'N/A')}\n"
+        msg += f"  Valid to: {rate.get('Valid_To', 'N/A')}\n"
+        if rate.get('Notes'):
+            msg += f"  📝 {rate.get('Notes')}\n"
+        msg += "\n"
+
+    msg += f"📞 Đặt chỗ: {CONTACT_TELEGRAM}"
+
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+
+# ── SPACE ──────────────────────────────────────────────────────────────────────
+
+async def show_space_menu(query):
+    keyboard = []
+    for key, r in ROUTES.items():
+        keyboard.append([InlineKeyboardButton(f"{r['flag']} {r['name']}", callback_data=f'space_{key}')])
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data='back')])
+
+    await query.edit_message_text(
+        "🛳 *Space & Lịch tàu*\n\nChọn tuyến bạn muốn xem:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+async def show_space_detail(query, route_key):
+    if route_key not in ROUTES:
+        await query.edit_message_text("❌ Tuyến không hợp lệ.")
+        return
+
+    r = ROUTES[route_key]
+    spaces = sheet_manager.get_space(route=r['name'])
+
+    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='space')]]
+
+    if not spaces:
+        await query.edit_message_text(
+            f"⚠️ *Hiện chưa có thông tin space cho {r['name']}*\n\n"
+            f"Liên hệ để được cập nhật nhanh nhất:\n"
+            f"📱 Telegram: {CONTACT_TELEGRAM}\n"
+            f"📲 Zalo: {CONTACT_ZALO}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return
+
+    msg = f"🛳 *Space còn trống - {r['name']}*\n"
+    msg += "─" * 25 + "\n\n"
+
+    for s in spaces[:5]:
+        status_icon = "✅" if s.get('Status', '').upper() == 'OPEN' else "🔴"
+        msg += f"{status_icon} *{s.get('Vessel', 'N/A')}*\n"
+        msg += f"  ETD: {s.get('ETD', 'N/A')} | ETA: {s.get('ETA', 'N/A')}\n"
+        msg += f"  20': {s.get('Space_20', '0')} slot | 40': {s.get('Space_40', '0')} slot\n"
+        msg += f"  Carrier: {s.get('Carrier', 'N/A')}\n\n"
+
+    msg += f"📞 Đặt chỗ ngay: {CONTACT_TELEGRAM}"
+
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+
+# ── CONTACT ────────────────────────────────────────────────────────────────────
+
+async def show_contact(query):
+    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]
+    await query.edit_message_text(
+        f"📞 *Liên hệ tư vấn*\n\n"
+        f"🏢 *{COMPANY_NAME}*\n\n"
+        f"📱 *Telegram:* {CONTACT_TELEGRAM}\n"
+        f"📲 *Zalo:* {CONTACT_ZALO}\n\n"
+        f"⏰ *Giờ làm việc:*\n"
+        f"{WORKING_HOURS}\n\n"
+        f"💬 Chúng tôi sẽ phản hồi trong vòng 30 phút!",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+# ── CALLBACK ROUTER ────────────────────────────────────────────────────────────
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý khi nhấn nút"""
     query = update.callback_query
     await query.answer()
-    
-    user = update.effective_user
     data = query.data
-    
+
     if data == 'rates':
         await show_rates_menu(query)
     elif data == 'space':
@@ -66,267 +251,100 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_routes(query)
     elif data == 'contact':
         await show_contact(query)
+    elif data == 'back':
+        await back_to_main(update, context)
     elif data.startswith('rate_'):
         await show_rate_detail(query, data[5:])
     elif data.startswith('space_'):
         await show_space_detail(query, data[6:])
-    
-    # Ghi log
-    sheet_manager.log_action(user.id, "BUTTON", data, "SUCCESS")
 
-async def show_rates_menu(query):
-    """Hiển thị menu chọn tuyến để xem giá"""
-    # Lấy danh sách routes từ sheet (tạm thời hard code)
-    routes = [
-        ("VN-US WC", "rate_vnuswc"),
-        ("VN-US EC", "rate_vnusec"),
-        ("VN-EU", "rate_vneu"),
-        ("VN-JP", "rate_vnjp"),
-        ("VN-KR", "rate_vnkr")
-    ]
-    
-    keyboard = []
-    for route_name, callback in routes:
-        keyboard.append([InlineKeyboardButton(route_name, callback_data=callback)])
-    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data='back')])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "📊 *Chọn tuyến bạn muốn xem giá:*\n\n"
-        "👉 Click vào tuyến để xem chi tiết",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
 
-async def show_space_menu(query):
-    """Hiển thị menu chọn POD để xem space"""
-    # Lấy danh sách POD từ sheet (tạm thời hard code)
-    pods = [
-        ("🇺🇸 Los Angeles (LAX)", "space_lax"),
-        ("🇺🇸 New York (NYC)", "space_nyc"),
-        ("🇪🇺 Rotterdam (RTM)", "space_rtm"),
-        ("🇯🇵 Tokyo (TYO)", "space_tyo"),
-        ("🇰🇷 Busan (BUS)", "space_bus")
-    ]
-    
-    keyboard = []
-    for pod_name, callback in pods:
-        keyboard.append([InlineKeyboardButton(pod_name, callback_data=callback)])
-    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data='back')])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "🛳 *Chọn cảng đích để xem space còn trống:*\n\n"
-        "👉 Click vào cảng để xem chi tiết",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+# ── ADMIN: UPLOAD EXCEL ────────────────────────────────────────────────────────
 
-async def show_rate_detail(query, route):
-    """Hiển thị chi tiết giá cho tuyến đã chọn"""
-    # Map route code sang tên
-    route_map = {
-        'vnuswc': ('VN-US WC', 'HCM', 'LAX'),
-        'vnusec': ('VN-US EC', 'HCM', 'NYC'),
-        'vneu': ('VN-EU', 'HCM', 'RTM'),
-        'vnjp': ('VN-JP', 'HCM', 'TYO'),
-        'vnkr': ('VN-KR', 'HCM', 'BUS')
-    }
-    
-    if route not in route_map:
-        await query.edit_message_text("❌ Không tìm thấy thông tin tuyến này!")
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Bạn không có quyền sử dụng tính năng này.")
         return
-    
-    route_name, pol, pod = route_map[route]
-    
-    # Lấy dữ liệu từ sheet
-    rates = sheet_manager.get_rates(pol=pol, pod=pod)
-    
-    if not rates:
-        # Nếu không có rate, hiển thị contact
-        contact_tg = sheet_manager.get_config('contact_telegram') or "t.me/..."
-        contact_zalo = sheet_manager.get_config('contact_zalo') or "09xxx"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='rates')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            f"⚠️ *Hiện chưa có giá cho tuyến {route_name}*\n\n"
-            f"Vui lòng liên hệ trực tiếp để được báo giá:\n"
-            f"📱 Telegram: {contact_tg}\n"
-            f"📲 Zalo: {contact_zalo}",
-            reply_markup=reply_markup,
+
+    doc = update.message.document
+    if not doc.file_name.endswith(('.xlsx', '.xls')):
+        await update.message.reply_text("⚠️ Vui lòng gửi file Excel (.xlsx hoặc .xls)")
+        return
+
+    await update.message.reply_text("⏳ Đang xử lý file Excel...")
+
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        file_path = f"/tmp/{doc.file_name}"
+        await file.download_to_drive(file_path)
+
+        result = sheet_manager.import_excel(file_path)
+
+        keyboard = [[InlineKeyboardButton("✅ Xác nhận cập nhật", callback_data='confirm_import'),
+                     InlineKeyboardButton("❌ Huỷ", callback_data='cancel_import')]]
+
+        await update.message.reply_text(
+            f"📋 *Preview dữ liệu từ Excel:*\n\n"
+            f"📊 RATES: {result.get('rates_count', 0)} dòng\n"
+            f"🛳 SPACE: {result.get('space_count', 0)} dòng\n\n"
+            f"Xác nhận cập nhật lên Google Sheet?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
-        return
-    
-    # Format kết quả
-    msg = f"📊 *Bảng giá {route_name}*\n"
-    msg += f"POL: {pol} → POD: {pod}\n"
-    msg += "─" * 30 + "\n\n"
-    
-    for rate in rates[:5]:  # Chỉ show 5 rate mới nhất
-        msg += f"*{rate.get('Carrier', 'N/A')}*\n"
-        msg += f"20GP: ${rate.get('20GP', 'N/A')} | 40GP: ${rate.get('40GP', 'N/A')}\n"
-        msg += f"40HC: ${rate.get('40HC', 'N/A')}\n"
-        msg += f"Valid: {rate.get('Valid_To', 'N/A')}\n"
-        msg += f"📝 {rate.get('Notes', '')}\n"
-        msg += "─" * 20 + "\n"
-    
-    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='rates')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi xử lý file: {str(e)}")
 
-async def show_space_detail(query, pod_code):
-    """Hiển thị chi tiết space cho POD đã chọn"""
-    # Map pod code sang tên đầy đủ
-    pod_map = {
-        'lax': 'Los Angeles (LAX)',
-        'nyc': 'New York (NYC)',
-        'rtm': 'Rotterdam (RTM)',
-        'tyo': 'Tokyo (TYO)',
-        'bus': 'Busan (BUS)'
-    }
-    
-    pod_name = pod_map.get(pod_code, pod_code.upper())
-    
-    # Lấy dữ liệu từ sheet
-    spaces = sheet_manager.get_space(pod=pod_name)
-    
-    if not spaces:
-        contact_tg = sheet_manager.get_config('contact_telegram') or "t.me/..."
-        
-        keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='space')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            f"⚠️ *Hiện chưa có thông tin space cho {pod_name}*\n\n"
-            f"Liên hệ để được cập nhật nhanh nhất:\n"
-            f"📱 Telegram: {contact_tg}",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-        return
-    
-    # Format kết quả
-    msg = f"🛳 *Space còn trống - {pod_name}*\n"
-    msg += "─" * 30 + "\n\n"
-    
-    for space in spaces[:5]:
-        msg += f"⚓ *{space.get('Vessel', 'N/A')}*\n"
-        msg += f"ETD: {space.get('ETD', 'N/A')} | ETA: {space.get('ETA', 'N/A')}\n"
-        msg += f"20': {space.get('Space_20', '0')} | 40': {space.get('Space_40', '0')}\n"
-        msg += f"Status: {space.get('Status', 'N/A')}\n"
-        msg += "─" * 20 + "\n"
-    
-    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='space')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def show_routes(query):
-    """Hiển thị các tuyến đang có"""
-    routes = [
-        "🇺🇸 **Mỹ**",
-        "  • HCM → LAX (West Coast)",
-        "  • HCM → NYC (East Coast)",
-        "  • HCM → SAV (Savannah)",
-        "",
-        "🇪🇺 **Châu Âu**",
-        "  • HCM → RTM (Rotterdam)",
-        "  • HCM → HAM (Hamburg)",
-        "  • HCM → FEL (Felixstowe)",
-        "",
-        "🇯🇵 **Nhật Bản**",
-        "  • HCM → TYO (Tokyo)",
-        "  • HCM → OSA (Osaka)",
-        "",
-        "🇰🇷 **Hàn Quốc**",
-        "  • HCM → BUS (Busan)",
-        "  • HCM → INC (Incheon)"
-    ]
-    
-    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        "🗺 *Các tuyến đang khai thác*\n\n" + "\n".join(routes),
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def show_contact(query):
-    """Hiển thị thông tin liên hệ"""
-    contact_tg = sheet_manager.get_config('contact_telegram') or "t.me/..."
-    contact_zalo = sheet_manager.get_config('contact_zalo') or "09xxx"
-    company = sheet_manager.get_config('company_name') or "Công ty chúng tôi"
-    
-    keyboard = [[InlineKeyboardButton("🔙 Quay lại", callback_data='back')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(
-        f"📞 *Liên hệ tư vấn*\n\n"
-        f"🏢 {company}\n\n"
-        f"📱 *Telegram:* {contact_tg}\n"
-        f"📲 *Zalo:* {contact_zalo}\n\n"
-        f"⏰ *Thời gian làm việc:*\n"
-        f"Thứ 2 - Thứ 6: 8:00 - 17:30\n"
-        f"Thứ 7: 8:00 - 12:00",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
+# ── MESSAGE HANDLER ────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý tin nhắn văn bản từ user"""
-    text = update.message.text.lower()
-    user = update.effective_user
-    
-    # Xử lý các từ khóa đơn giản
-    if any(word in text for word in ['giá', 'rate', 'bảng giá']):
-        await show_rates_menu(update.message)
-    elif any(word in text for word in ['space', 'còn chỗ', 'tàu']):
-        await show_space_menu(update.message)
-    elif any(word in text for word in ['liên hệ', 'contact', 'tư vấn']):
-        await show_contact(update.message)
-    elif any(word in text for word in ['tuyến', 'route', 'đi']):
-        await show_routes(update.message)
-    else:
-        # Không hiểu, gợi ý dùng menu
-        keyboard = [[InlineKeyboardButton("📋 Xem menu", callback_data='back')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "❌ *Xin lỗi, tôi chưa hiểu yêu cầu của bạn.*\n\n"
-            "Vui lòng sử dụng menu bên dưới để chọn thông tin cần xem:",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-    
-    # Ghi log
-    sheet_manager.log_action(user.id, "MESSAGE", text, "PROCESSED")
+    keyboard = [[InlineKeyboardButton("📋 Xem menu", callback_data='back')]]
+    await update.message.reply_text(
+        "❓ Vui lòng sử dụng menu để tra cứu thông tin.\n\n"
+        "Hoặc liên hệ trực tiếp:\n"
+        f"📱 {CONTACT_TELEGRAM}\n"
+        f"📲 {CONTACT_ZALO}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# ── BACK TO MAIN ───────────────────────────────────────────────────────────────
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Quay lại menu chính"""
     query = update.callback_query
-    await query.answer()
-    await start(query, context)
+    user = query.from_user
+
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Bảng giá cước", callback_data='rates'),
+            InlineKeyboardButton("🛳 Space & Lịch tàu", callback_data='space')
+        ],
+        [
+            InlineKeyboardButton("🗺 Các tuyến", callback_data='routes'),
+            InlineKeyboardButton("📞 Liên hệ tư vấn", callback_data='contact')
+        ]
+    ]
+
+    await query.edit_message_text(
+        f"🚢 *{COMPANY_NAME}*\n\n"
+        f"Chọn thông tin cần xem:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+# ── MAIN ───────────────────────────────────────────────────────────────────────
 
 def main():
-    """Main function chạy bot"""
-    # Tạo application
     application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add handlers
+
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Lọc riêng nút back
-    application.add_handler(CallbackQueryHandler(back_to_main, pattern='^back$'))
-    
-    # Chạy bot
-    print("🚀 Bot đang chạy...")
+
+    print("🚀 Logistics Supporter Bot đang chạy...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
